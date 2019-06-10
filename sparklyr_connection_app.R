@@ -32,10 +32,6 @@ server <- function(input, output) {
   Sys.setenv(R_CONFIG_ACTIVE = "s3")
   s3config <- config::get()
   
-  Sys.setenv("AWS_ACCESS_KEY_ID" = s3config$key,
-             "AWS_SECRET_ACCESS_KEY" = s3config$secret,
-             "AWS_DEFAULT_REGION" = "us-east-2")
-  
   Sys.setenv(R_CONFIG_ACTIVE = "default")
   mysql_config <- config::get()
 
