@@ -1,0 +1,163 @@
+---
+title: "Sparklyr Demo"
+output: html_notebook
+---
+
+## Install packages
+
+```{r, eval=FALSE}
+install.packages("sparklyr")
+install.packages("dplyr")
+install.packages("config")
+install.packages("nycflights13")
+install.packages("RMySQL")
+install.packages("aws.s3", repos = c("cloudyr" = "http://cloudyr.github.io/drat"))
+```
+
+## Load Libraries
+
+```{r}
+library(sparklyr)
+library(config)
+library(dplyr)
+library(DBI)
+library(aws.s3)
+```
+
+## Install Spark
+
+```{r, eval=FALSE}
+options(spark.install.dir = getwd())
+spark_install(version = "2.4")
+```
+
+## MySQL Connection
+
+```{r, eval=FALSE}
+Sys.setenv(R_CONFIG_ACTIVE = "default")
+mysql_config <- config::get()
+
+demo_db <- DBI::dbConnect(RMySQL::MySQL(), dbname = 'demo', 
+                     host = mysql_config$host, 
+                     port = mysql_config$port, 
+                     username = mysql_config$username, 
+                     password = mysql_config$password)
+```
+
+## Load Iris to DB
+
+```{r, eval=FALSE}
+# Local write MySQL 8.0 fix
+# SET GLOBAL local_infile = true;
+
+# Rename for spark
+iris_tmp <- iris %>% 
+  rename("Sepal_Length" = Sepal.Length,
+         "Sepal_Width" = Sepal.Width,
+         "Petal_Length" = Petal.Length,
+         "Petal_Width" = Petal.Width)
+
+dbWriteTable(demo_db, "iris", iris_tmp, overwrite = TRUE)
+```
+
+## Load Iris to S3
+
+```{r, eval=FALSE}
+Sys.setenv(R_CONFIG_ACTIVE = "s3")
+s3config <- config::get()
+
+Sys.setenv("AWS_ACCESS_KEY_ID" = s3config$key,
+           "AWS_SECRET_ACCESS_KEY" = s3config$secret,
+           "AWS_DEFAULT_REGION" = "us-east-2")
+
+demo_bucket <- get_bucket(bucket = "drugdemo",
+                          key = s3config$key,
+                          secret = s3config$secret)
+
+s3write_using(iris, 
+              FUN = write.csv, 
+              row.names = FALSE,
+              bucket = "drugdemo",
+              object = "/iris.csv")
+```
+
+## Download and unpack mysql odbc connector
+
+```{r, eval=FALSE}
+system("wget https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-8.0.16.tar.gz")
+system("tar -xf mysql-connector-java-8.0.16.tar.gz")
+```
+
+## Download and move hadoop jar and aws jar
+
+Note: making sure you correct aws dependacy for your hadoop jar is key
+```{r, eval=FALSE}
+system("wget http://central.maven.org/maven2/org/apache/hadoop/hadoop-aws/2.7.3/hadoop-aws-2.7.3.jar")
+system("wget http://central.maven.org/maven2/com/amazonaws/aws-java-sdk/1.7.4/aws-java-sdk-1.7.4.jar")
+
+system(paste0("mv hadoop-aws-2.7.3.jar ", getwd(), "/spark-2.4.3-bin-hadoop2.7/jars/"))
+system(paste0("mv aws-java-sdk-1.7.4.jar ", getwd(), "/spark-2.4.3-bin-hadoop2.7/jars/"))
+```
+
+## Edit spark-defaults.conf
+
+```{r, eval=FALSE}
+system(paste0("cp ", 
+              getwd(), "/spark-2.4.3-bin-hadoop2.7/conf/spark-defaults.conf.template ", 
+              getwd(), "/spark-2.4.3-bin-hadoop2.7/conf/spark-defaults.conf"))
+
+#Add 
+#spark.driver.extraClassPath = {directory}/mysql-connector-java-8.0.16.jar
+#spark.executor.extraClassPath = {directory}/mysql-connector-java-8.0.16.jar
+file.edit(paste0(getwd(), "/spark-2.4.3-bin-hadoop2.7/conf/spark-defaults.conf"))
+```
+
+# Test out the connections!
+
+```{r}
+options(spark.install.dir = getwd())
+
+sc <- spark_connect(master = "local")
+
+sp_mysql_iris <- spark_read_jdbc(sc, "mysql_iris", options = list(
+                                 url = paste0("jdbc:mysql://",
+                                              mysql_config$host,
+                                              ":", mysql_config$port,
+                                              "/demo"),
+                                 user = mysql_config$username,
+                                 password = mysql_config$password,
+                                 dbtable = "iris",
+                                 memory = TRUE))
+
+#Get spark context
+ctx <- spark_context(sc)
+
+#Use below to set the java spark context
+jsc <- invoke_static(
+  sc,
+  "org.apache.spark.api.java.JavaSparkContext",
+  "fromSparkContext",
+  ctx
+)
+#set the s3 configs:
+hconf <- jsc %>% invoke("hadoopConfiguration")
+hconf %>% invoke("set","fs.s3a.access.key", s3config$key)
+hconf %>% invoke("set","fs.s3a.secret.key", s3config$secret)
+hconf %>% invoke("set","fs.s3a.endpoint", "s3.us-east-2.amazonaws.com")
+
+sp_csv_iris <- spark_read_csv(sc, "iris_csv", 
+                                 path = "s3a://drugdemo/iris.csv",
+                                 memory = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
